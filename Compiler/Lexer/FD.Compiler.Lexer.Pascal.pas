@@ -28,17 +28,27 @@ type
     FTokenState_MaybeFloatECharAndMinusSignal: TTokenState;
     FTokenState_FloatAfterDot: TTokenState;
     FTokenState_FloatAfterEMarker: TTokenState;
+
+    FTokenState_UnterminatedBuildingLiteralString: TTokenState;
+    FTokenState_UnterminatedAtEndOfLineLiteralString: TTokenState;
+    FTokenState_TerminatedLiteralString: TTokenState;
   protected
     procedure EnumerateBlockTypes;
     procedure EnumerateKeywords;
     procedure MountTokenStateMachine;
 
+    procedure StateUtil_AddBreaklineTransition(const FromState, ToState: TTokenState);
+    procedure StateUtil_AddWhiteSpaceTransition(const FromState, ToState: TTokenState);
+
     procedure MountTokenStateMachine_Identifier;
     procedure MountTokenStateMachine_WhiteSpace;
     procedure MountTokenStateMachine_Operator;
     procedure MountTokenStateMachine_DecimalPositiveInteger;
+    procedure MountTokenStateMachine_LiteralString;
     procedure MountTokenStateMachine_FloatNumber;
     procedure MountTokenStateMachine_MalformedWordToken;
+
+    function ParsePascalQuotedString(const InputString: String): String;
   public
     constructor Create;
     destructor Destroy; override;
@@ -64,6 +74,9 @@ type
     constructor Create(Environment: TCompilerEnvironment); override;
     destructor Destroy; override;
   end;
+
+const
+  PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING = 'Unterminated String';
 
 implementation
 
@@ -141,6 +154,9 @@ begin
 
       Token.ParsedValueAsFloat := ValDouble;
     end;
+
+    ttLiteralString:
+      Token.ParsedValueAsString := Self.ParsePascalQuotedString(Token.InputString);
   end;
 end;
 
@@ -310,10 +326,23 @@ begin
   FTokenState_MaybeFloatECharAndMinusSignal := Self.TokenStateMachine.CreateNewState();
   FTokenState_MaybeFloatECharAndMinusSignal.IsFinal := False;
 
+  FTokenState_UnterminatedBuildingLiteralString := Self.TokenStateMachine.CreateNewState();
+  FTokenState_UnterminatedBuildingLiteralString.IsFinal := True;
+  FTokenState_UnterminatedBuildingLiteralString.Data := TTokenStateData.Create(ttMalformedToken, PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING);
+
+  FTokenState_UnterminatedAtEndOfLineLiteralString := Self.TokenStateMachine.CreateNewState();
+  FTokenState_UnterminatedAtEndOfLineLiteralString.IsFinal := False;
+  FTokenState_UnterminatedAtEndOfLineLiteralString.Data := TTokenStateData.Create(ttMalformedToken, PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING);
+
+  FTokenState_TerminatedLiteralString := Self.TokenStateMachine.CreateNewState();
+  FTokenState_TerminatedLiteralString.IsFinal := True;
+  FTokenState_TerminatedLiteralString.Data := ttLiteralString;
+
   Self.MountTokenStateMachine_Identifier();
   Self.MountTokenStateMachine_WhiteSpace();
   Self.MountTokenStateMachine_Operator();
   Self.MountTokenStateMachine_DecimalPositiveInteger();
+  Self.MountTokenStateMachine_LiteralString();
   Self.MountTokenStateMachine_FloatNumber();
   Self.MountTokenStateMachine_MalformedWordToken();
 end;
@@ -381,6 +410,20 @@ begin
   FTokenState_Identifier.AddTransition('0', '9', FTokenState_Identifier);
 end;
 
+procedure TPascalLexerRules.MountTokenStateMachine_LiteralString;
+begin
+  // Initial to Unterminated Building String
+  FTokenState_Initial.AddTransition('''', FTokenState_UnterminatedBuildingLiteralString);
+
+  // unterminated building string to ... loopback, terminated string or unterminated at end of line
+  FTokenState_UnterminatedBuildingLiteralString.AddTransition('''', FTokenState_TerminatedLiteralString);
+  Self.StateUtil_AddBreaklineTransition(FTokenState_UnterminatedBuildingLiteralString, FTokenState_UnterminatedAtEndOfLineLiteralString);
+  FTokenState_UnterminatedBuildingLiteralString.SetFallbackTransition(FTokenState_UnterminatedBuildingLiteralString);
+
+  // Terminated String - Sequence of two ' ('') must be parsed as single in-content '
+  FTokenState_TerminatedLiteralString.AddTransition('''', FTokenState_UnterminatedBuildingLiteralString);
+end;
+
 procedure TPascalLexerRules.MountTokenStateMachine_MalformedWordToken;
 begin
   FTokenState_MalformedWordToken.AddTransition('A', 'Z', FTokenState_MalformedWordToken);
@@ -390,20 +433,74 @@ begin
 end;
 
 procedure TPascalLexerRules.MountTokenStateMachine_WhiteSpace;
-const
-  WHITE_SPACE_SEQUENCES: array[0..4] of String = (' ', #160, #13, #10, #13#10);
-var
-  i: Integer;
 begin
   // Initial State
-
-  for i := 0 to Length(WHITE_SPACE_SEQUENCES) - 1 do
-    FTokenState_Initial.AddTransition(WHITE_SPACE_SEQUENCES[i], FTokenState_WhiteSpace);
+  Self.StateUtil_AddBreaklineTransition(FTokenState_Initial, FTokenState_WhiteSpace);
+  Self.StateUtil_AddWhiteSpaceTransition(FTokenState_Initial, FTokenState_WhiteSpace);
 
   // Loopback state
+  Self.StateUtil_AddBreaklineTransition(FTokenState_WhiteSpace, FTokenState_WhiteSpace);
+  Self.StateUtil_AddWhiteSpaceTransition(FTokenState_WhiteSpace, FTokenState_WhiteSpace);
+end;
 
-  for i := 0 to Length(WHITE_SPACE_SEQUENCES) - 1 do
-    FTokenState_WhiteSpace.AddTransition(WHITE_SPACE_SEQUENCES[i], FTokenState_WhiteSpace);
+function TPascalLexerRules.ParsePascalQuotedString(const InputString: String): String;
+var
+  StrB: TStringBuilder;
+  i, MaxPosToSeek: NativeInt;
+  C: Char;
+begin
+  Assert(Length(InputString) >= 2);
+  Assert(InputString.Chars[0] = '''');
+  Assert(InputString.Chars[Length(InputString) - 1] = '''');
+
+  StrB := TStringBuilder.Create;
+
+  try
+    i := 1;
+    MaxPosToSeek := Length(InputString) - 2;
+
+    while i <= MaxPosToSeek do
+    begin
+      C := InputString.Chars[i];
+
+      if C = '''' then
+      begin
+        Assert(i < MaxPosToSeek);
+        Assert(InputString.Chars[i + 1] = '''');
+        StrB.Append(C);
+        Inc(i, 2);
+      end else
+      begin
+        Assert((C <> #13) and (C <> #10) and (C <> #$85));
+        StrB.Append(C);
+        Inc(i);
+      end;
+    end;
+
+    Result := StrB.ToString;
+  finally
+    StrB.DisposeOf;
+  end;
+end;
+
+procedure TPascalLexerRules.StateUtil_AddBreaklineTransition(const FromState,
+  ToState: TTokenState);
+begin
+  Assert(FromState <>  nil);
+  Assert(ToState <> nil);
+  FromState.AddTransition(#13, ToState);
+  FromState.AddTransition(#10, ToState);
+  FromState.AddTransition(#$85, ToState);
+  FromState.AddTransition(#13#10, ToState);
+end;
+
+procedure TPascalLexerRules.StateUtil_AddWhiteSpaceTransition(const FromState,
+  ToState: TTokenState);
+begin
+  Assert(FromState <>  nil);
+  Assert(ToState <> nil);
+  FromState.AddTransition(' ', ToState);
+  FromState.AddTransition(#160, ToState);
 end;
 
 procedure TPascalLexerRules.MountTokenStateMachine_Operator;
@@ -419,6 +516,7 @@ begin
   FTokenState_Initial.AddTransition('*', FTokenState_Operator);
   FTokenState_Initial.AddTransition('/', FTokenState_Operator);
   FTokenState_Initial.AddTransition('.', FTokenState_Operator);
+  FTokenState_Initial.AddTransition('=', FTokenState_Operator);
 end;
 
 initialization

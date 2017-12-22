@@ -1,0 +1,8 @@
+if'foo'='bar' then
+''foo'josé'
+foo'josé''maria'
+'josé''maria''ana''foo''bar'
+'abacate
+'abacate''
+'abacate''terra
+'josé''maria''ana''foo''bar''

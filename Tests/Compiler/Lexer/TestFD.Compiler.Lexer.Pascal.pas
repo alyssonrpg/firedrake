@@ -14,7 +14,7 @@ interface
 uses
   TestFramework, System.SysUtils, System.Classes,
   FD.Compiler.Lexer, FD.Compiler.Lexer.Pascal, TestFD.Compiler.Lexer, FD.Compiler.Environment,
-  FD.Compiler.Lexer.Tokens;
+  FD.Compiler.Lexer.Tokens, System.Diagnostics;
 
 type
   // Test methods for class TPascalLexer
@@ -34,6 +34,8 @@ type
     procedure TestVeryBasic2;
 
     procedure TestBasicTokenTypes1;
+    procedure TestLongFiles;
+    procedure TestStringLexing;
   end;
 
 implementation
@@ -126,6 +128,63 @@ begin
   Assert(FPascalLexer.GetNextToken().IsWhiteSpace());
   Assert(FPascalLexer.GetNextToken().IsLiteralFloat(25.7e-20));
   Assert(FPascalLexer.GetNextToken().IsEOF);
+end;
+
+procedure TestTPascalLexer.TestLongFiles;
+var
+  Tok: TToken;
+  SW: TStopWatch;
+begin
+  Self.SetupPascalTest('LongFiles');
+
+  SW := TStopwatch.StartNew;
+  FPascalLexer.OpenFile('LongContentFile.pas');
+
+  SW.Stop;
+
+  if SW.Elapsed.TotalMilliseconds = -5 then
+    Abort; // Will never reach. Just a easy way to add breakpoint and watch "SW.Elapsed.TotalMilliseconds" value
+
+  SW := TStopwatch.StartNew;
+
+  while not FPascalLexer.EOF do
+    Tok := FPascalLexer.GetNextToken();
+
+  SW.Stop;
+
+  if SW.Elapsed.TotalMilliseconds = -5 then
+    Abort; // Will never reach. Just a easy way to add breakpoint and watch "SW.Elapsed.TotalMilliseconds" value
+end;
+
+procedure TestTPascalLexer.TestStringLexing;
+begin
+  Self.SetupPascalTest('StringLexing');
+  FPascalLexer.OpenFile('content.txt');
+  Assert(FPascalLexer.GetNextToken().IsKeyword('if'));
+  Assert(FPascalLexer.GetNextToken().IsLiteralString('foo'));
+  Assert(FPascalLexer.GetNextToken().IsOperator('='));
+  Assert(FPascalLexer.GetNextToken().IsLiteralString('bar'));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace());
+  Assert(FPascalLexer.GetNextToken().IsKeyword('then'));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsLiteralString(''));
+  Assert(FPascalLexer.GetNextToken().IsIdentifier('foo'));
+  Assert(FPascalLexer.GetNextToken().IsLiteralString('josé'));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsIdentifier('foo'));
+  Assert(FPascalLexer.GetNextToken().IsLiteralString('josé''maria'));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsLiteralString('josé''maria''ana''foo''bar'));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+
+  // Malformed strings
+  Assert(FPascalLexer.GetNextToken().IsMalformedToken('''abacate', PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsMalformedToken('''abacate''''', PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsMalformedToken('''abacate''''terra', PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING));
+  Assert(FPascalLexer.GetNextToken().IsWhiteSpace);
+  Assert(FPascalLexer.GetNextToken().IsMalformedToken('''josé''''maria''''ana''''foo''''bar''''', PASCAL_TOKEN_MALFORMED_UNTERMINATED_STRING));
 end;
 
 procedure TestTPascalLexer.TestVeryBasic1;

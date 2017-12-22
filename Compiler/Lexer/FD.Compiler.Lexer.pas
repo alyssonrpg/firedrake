@@ -27,6 +27,7 @@ type
     FContent: String;
 
     FGlyphs: TArray<TUTF16Glyph>;
+    FGlyphCount: NativeInt;  // Length(FGlyphs) can (and will be) greater than FGlyphCount
     FGlyphsInfos: TArray<TLexerGlyphPosInfo>;
 
     FCurrentGlyphIdx: NativeInt;
@@ -35,6 +36,7 @@ type
     function GetGlyphCount: NativeInt; virtual;
     function GetGlyph(const Index: NativeInt): TUTF16Glyph; virtual;
     procedure SetCurrentGlyphIdx(const Value: NativeInt); virtual;
+    procedure LoadGlyphsArray(const InputString: String); virtual;
   public
     constructor Create(Environment: TCompilerEnvironment;
                        LogicalUnfoldName, FullPathFileName: String);
@@ -67,7 +69,19 @@ type
   TBlockType = Integer;
   TKeyword = String;
 
-  TTokenState = TState<TUCS4Sequence, TTokenType>;
+  TTokenStateData = record
+    TokenType: TTokenType;
+    ErrorMessage: String;
+
+    procedure Initialize;
+    class function Create(const TokenType: TTokenType): TTokenStateData; overload; static;
+    class function Create(const TokenType: TTokenType; const ErrorMsg: String): TTokenStateData; overload; static;
+
+    class operator Implicit(const V: TTokenType): TTokenStateData;
+    class operator Implicit(const V: TTokenStateData): TTokenType;
+  end;
+
+  TTokenState = TState<TUCS4Sequence, TTokenStateData>;
 
   TLexerRules = class(TObject)
   public
@@ -85,7 +99,7 @@ type
   protected
     FIsCaseSensitive: Boolean;
     FBlockTypes: TDictionary<TBlockType, TBlockRules>;
-    FTokenStateMachine: TStateMachine<TUCS4Sequence, TTokenType>;
+    FTokenStateMachine: TStateMachine<TUCS4Sequence, TTokenStateData>;
     FFormatSettings: TFormatSettings;
   public
     constructor Create;
@@ -100,7 +114,7 @@ type
     function IsKeyword(const CurrentBlockType: TBlockType; const Value: TKeyword): Boolean;
 
     property IsCaseSensitive: Boolean read FIsCaseSensitive write FIsCaseSensitive;
-    property TokenStateMachine: TStateMachine<TUCS4Sequence, TTokenType> read FTokenStateMachine;
+    property TokenStateMachine: TStateMachine<TUCS4Sequence, TTokenStateData> read FTokenStateMachine;
   end;
 
   (* TLexer is an abstract class that purposes is to interpret correctly
@@ -112,6 +126,7 @@ type
   *)
 
   TLexer = class abstract(TObject)
+  private
   protected
     FEnvironment: TCompilerEnvironment;
     FContentStack: TStack<TLexerContent>;
@@ -125,6 +140,7 @@ type
     function OpenLexerContent(const FileName: String): TLexerContent;
 
     function CreateCodeLocation(const GlyphStartIndex, GlyphCount: Integer): TCodeLocation; virtual;
+    function GetEOF: Boolean; virtual;
   public
     constructor Create(Environment: TCompilerEnvironment); virtual;
     destructor Destroy; override;
@@ -136,6 +152,7 @@ type
 
     property Environment: TCompilerEnvironment read FEnvironment;
     property CurrentBlockType: TBlockType read FCurrentBlockType write FCurrentBlockType;
+    property EOF: Boolean read GetEOF;
   end;
 
 implementation
@@ -201,12 +218,18 @@ begin
   Rules.DisposeOf;
 end;
 
+function TLexer.GetEOF: Boolean;
+begin
+  Result := FContent.CurrentGlyphIdx >= FContent.GlyphCount;
+end;
+
 function TLexer.GetNextToken: TToken;
 var
   CurrentMachineState, NextMachineState, LastFinalMachineStateFound: TTokenState;
   i, FirstGlyphIndex, LastFinalMachineStateFoundGlyphIndex: NativeInt;
   Glyph: TUTF16Glyph;
   GlyphUCS4Sequence: TUCS4Sequence;
+  TokenStateData: TTokenStateData;
 begin
   Assert(FContent <> nil);
 
@@ -254,13 +277,20 @@ begin
   if (LastFinalMachineStateFound <> nil) then
   begin
     Assert(LastFinalMachineStateFoundGlyphIndex >= FirstGlyphIndex);
+    TokenStateData := LastFinalMachineStateFound.Data;
 
     Result.Initialize;
-    Result.TokenType := LastFinalMachineStateFound.Data;
+    Result.TokenType := TokenStateData.TokenType;
     Result.Location := Self.CreateCodeLocation(FirstGlyphIndex, LastFinalMachineStateFoundGlyphIndex - FirstGlyphIndex + 1);
 
     if FRules.IsCaseSensitive then
       Include(Result.Flags, TTokenFlag.tfCaseSensitive);
+
+    if TokenStateData.ErrorMessage <> '' then
+    begin
+      Assert(Result.TokenType = ttMalformedToken);
+      Result.MalformedDescription := TokenStateData.ErrorMessage;
+    end;
   end else
   begin
     Result.Initialize;
@@ -331,12 +361,12 @@ function TLexerContent.CreateFileRange(const StartGlyphIndex,
 var
   GlyphInfo: PLexerGlyphPosInfo;
 begin
-  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= Length(FGlyphs)));
+  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= FGlyphCount));
 
   Result.Initialize;
   Result.FileName := Self.AbsoluteFileName;
 
-  if StartGlyphIndex = Length(FGlyphs) then
+  if StartGlyphIndex = FGlyphCount then
   begin
     Assert(GlyphCount = 0);
     Result.UTF16CharStartIndex := Length(FContent);
@@ -356,7 +386,7 @@ begin
     end;
   end else
   begin
-    Assert(StartGlyphIndex + GlyphCount <= Length(FGlyphs));
+    Assert(StartGlyphIndex + GlyphCount <= FGlyphCount);
     Assert(GlyphCount > 0);
 
     GlyphInfo := @FGlyphsInfos[StartGlyphIndex];
@@ -387,7 +417,7 @@ end;
 
 function TLexerContent.GetGlyph(const Index: NativeInt): TUTF16Glyph;
 begin
-  if (Index >= 0) and (Index < Length(FGlyphs)) then
+  if (Index >= 0) and (Index < FGlyphCount) then
     Result := FGlyphs[Index]
   else
     Result := TUTF16Glyph.Null;
@@ -395,7 +425,7 @@ end;
 
 function TLexerContent.GetGlyphCount: NativeInt;
 begin
-  Result := Length(FGlyphs);
+  Result := FGlyphCount;
 end;
 
 procedure TLexerContent.LoadFromBytes(Data: TBytes; Encoding: TEncoding);
@@ -410,17 +440,18 @@ begin
   FContent := Encoding.GetString(Data);
   FCurrentGlyphIdx := 0;
 
-  FGlyphs := TUTF16Glyph.GetGlyphsArray(FContent);
-  SetLength(FGlyphsInfos, Length(FGlyphs));
+  Self.LoadGlyphsArray(FContent);
 
-  if Length(FGlyphs) > 0 then
+  SetLength(FGlyphsInfos, FGlyphCount);
+
+  if FGlyphCount > 0 then
   begin
     AccumUTF16CharCount := 0;
     GlyphInfo := @FGlyphsInfos[0];
     CurrentLineIndex := 0;
     CurrentColumnIndex := 0;
 
-    for i := 0 to Length(FGlyphs) - 1 do
+    for i := 0 to FGlyphCount - 1 do
     begin
       G := FGlyphs[i];
       ThisGlyphUTF16CharCount := G.TotalLength;
@@ -442,7 +473,7 @@ begin
     end;
   end;
 
-  Assert(FCurrentGlyphIdx <= Length(FGlyphs));
+  Assert(FCurrentGlyphIdx <= FGlyphCount);
 end;
 
 procedure TLexerContent.LoadFromBytesDiscoverEncoding(Data: TBytes);
@@ -507,6 +538,23 @@ begin
   end;
 end;
 
+procedure TLexerContent.LoadGlyphsArray(const InputString: String);
+var
+  Seeker: TUTF16GlyphsSequencialSeek;
+  G: TUTF16Glyph;
+begin
+  FGlyphCount := 0;
+  SetLength(FGlyphs, Length(InputString) + 5);
+  Seeker.PrepareForSequencialSeek(InputString);
+
+  while Seeker.FetchNext(G) do
+  begin
+    Assert(FGlyphCount < Length(FGlyphs));
+    FGlyphs[FGlyphCount] := G;
+    Inc(FGlyphCount);
+  end;
+end;
+
 function TLexerContent.Next(const DeltaOffset: NativeInt): TUTF16Glyph;
 begin
   Result := Self.Glyph[Self.CurrentGlyphIdx + DeltaOffset];
@@ -515,7 +563,7 @@ end;
 procedure TLexerContent.PopCurrentGlyphIdx;
 begin
   FCurrentGlyphIdx := FCurrentGlyphIdxStack.Pop;
-  Assert((FCurrentGlyphIdx >= 0) and (FCurrentGlyphIdx <= Length(FGlyphs)));
+  Assert((FCurrentGlyphIdx >= 0) and (FCurrentGlyphIdx <= FGlyphCount));
 end;
 
 function TLexerContent.Previous(const DeltaOffset: NativeInt): TUTF16Glyph;
@@ -525,7 +573,7 @@ end;
 
 procedure TLexerContent.PushCurrentGlyphIdx(const NewIndex: NativeInt);
 begin
-  Assert((NewIndex >= 0) and (NewIndex <= Length(FGlyphs)));
+  Assert((NewIndex >= 0) and (NewIndex <= FGlyphCount));
 
   FCurrentGlyphIdxStack.Push(FCurrentGlyphIdx);
   FCurrentGlyphIdx := NewIndex;
@@ -535,7 +583,7 @@ procedure TLexerContent.SetCurrentGlyphIdx(const Value: NativeInt);
 begin
   if FCurrentGlyphIdx <> Value then
   begin
-    Assert((Value >= 0) and (Value <= Length(FGlyphs)));
+    Assert((Value >= 0) and (Value <= FGlyphCount));
     FCurrentGlyphIdx := Value;
   end;
 end;
@@ -546,15 +594,15 @@ var
   GlyphInfo: PLexerGlyphPosInfo;
   StringStartIndex, StringCharCount: NativeInt;
 begin
-  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= Length(FGlyphs)));
+  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= FGlyphCount));
 
-  if StartGlyphIndex = Length(FGlyphs) then
+  if StartGlyphIndex = FGlyphCount then
   begin
     Assert(GlyphCount = 0);
     Result := '';
   end else
   begin
-    Assert(StartGlyphIndex + GlyphCount <= Length(FGlyphs));
+    Assert(StartGlyphIndex + GlyphCount <= FGlyphCount);
     Assert(GlyphCount > 0);
 
     GlyphInfo := @FGlyphsInfos[StartGlyphIndex];
@@ -602,7 +650,7 @@ end;
 constructor TLexerRules.Create;
 begin
   FBlockTypes := TDictionary<TBlockType, TBlockRules>.Create;
-  FTokenStateMachine := TStateMachine<TUCS4Sequence, TTokenType>.Create(TUCS4SequenceComparer.Create);
+  FTokenStateMachine := TStateMachine<TUCS4Sequence, TTokenStateData>.Create(TUCS4SequenceComparer.Create);
 
   Self.AddBlockType(BLOCKTYPE_MAIN);
 
@@ -659,6 +707,39 @@ destructor TLexerRules.TBlockRules.Destroy;
 begin
   FKeywords.DisposeOf;
   inherited;
+end;
+
+{ TTokenStateData }
+
+class function TTokenStateData.Create(
+  const TokenType: TTokenType): TTokenStateData;
+begin
+  Result.Initialize;
+  Result.TokenType := TokenType;
+end;
+
+class operator TTokenStateData.Implicit(const V: TTokenType): TTokenStateData;
+begin
+  Result := TTokenStateData.Create(V);
+end;
+
+class function TTokenStateData.Create(const TokenType: TTokenType;
+  const ErrorMsg: String): TTokenStateData;
+begin
+  Result.Initialize;
+  Result.TokenType := TokenType;
+  Result.ErrorMessage := ErrorMsg;
+end;
+
+class operator TTokenStateData.Implicit(const V: TTokenStateData): TTokenType;
+begin
+  Result := V.TokenType;
+end;
+
+procedure TTokenStateData.Initialize;
+begin
+  Self.TokenType := ttUnknown;
+  Self.ErrorMessage := '';
 end;
 
 end.

@@ -30,7 +30,7 @@ type
   end;
 
 const
-  SORUCE_CASES_DIR = 'E:\OneDrive\FireDev\Tests\Cases\';  // CHANGE THIS
+  SORUCE_CASES_DIR = 'D:\sd\firedrake\Tests\Cases\';  // CHANGE THIS
 
 implementation
 

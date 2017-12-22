@@ -50,13 +50,15 @@ type
   private
     function GetParsedValueAsInt64: Int64;
     procedure SetParsedValueAsInt64(const V: Int64);
-
     function GetParsedValueAsFloat: Double;
     procedure SetParsedValueAsFloat(const Value: Double);
+    function GetParsedValueAsString: String;
+    procedure SetParsedValueAsString(const Value: String);
   public
     TokenType: TTokenType;
     Location: TCodeLocation;
     InputString: String;  // String containing complete token. Eg: In a commentary, Value will contain the text and Complete Token will contain the opening/closing characters of the commentary
+    MalformedDescription: String;
     ParsedValue: TValue;
     Flags: TTokenFlags;
 
@@ -76,8 +78,12 @@ type
     function IsLiteralFloat: Boolean; overload; inline;
     function IsLiteralFloat(const Value: Double): Boolean; overload;
 
+    function IsLiteralString: Boolean; overload; inline;
+    function IsLiteralString(const StringContent: String): Boolean; overload;
+
     function IsMalformedToken: Boolean; overload; inline;
     function IsMalformedToken(const InputString: String): Boolean; overload;
+    function IsMalformedToken(const InputString: String; const MalformedDescription: String): Boolean; overload;
 
     function IsWhiteSpace: Boolean; inline;
     function IsEOF: Boolean; inline;
@@ -86,6 +92,7 @@ type
 
     property ParsedValueAsInt64: Int64 read GetParsedValueAsInt64 write SetParsedValueAsInt64;
     property ParsedValueAsFloat: Double read GetParsedValueAsFloat write SetParsedValueAsFloat;
+    property ParsedValueAsString: String read GetParsedValueAsString write SetParsedValueAsString;
   end;
 
   ECodeLocationException = class(EFDException)
@@ -134,10 +141,18 @@ begin
   Result := Self.ParsedValue.AsType<Int64>;
 end;
 
+function TToken.GetParsedValueAsString: String;
+begin
+  Assert(not Self.ParsedValue.IsEmpty);
+  Assert(Self.ParsedValue.IsType<String>);
+  Result := Self.ParsedValue.AsType<String>;
+end;
+
 procedure TToken.Initialize;
 begin
   Self.TokenType := TTokenType.ttUnknown;
   Self.InputString := '';
+  Self.MalformedDescription := '';
   Self.Location.Initialize;
   Self.ParsedValue := TValue.Empty;
   Self.Flags := [];
@@ -237,6 +252,35 @@ begin
     Result := False;
 end;
 
+function TToken.IsLiteralString: Boolean;
+begin
+  Result := Self.TokenType = ttLiteralString;
+end;
+
+function TToken.IsLiteralString(const StringContent: String): Boolean;
+begin
+  if Self.TokenType = ttLiteralString then
+    Result := Self.ParsedValueAsString = StringContent
+  else
+    Result := False;
+end;
+
+function TToken.IsMalformedToken(const InputString,
+  MalformedDescription: String): Boolean;
+begin
+  if Self.TokenType = ttMalformedToken then
+  begin
+    if TTokenFlag.tfCaseSensitive in Self.Flags then
+      Result := Self.InputString = InputString
+    else
+      Result := TUnicode.Compare(Self.InputString, InputString, [TUnicodeCollateOption.ucoIgnoreCase]) = 0;
+
+    if Result then
+      Result := TUnicode.Compare(Self.MalformedDescription, MalformedDescription) = 0;
+  end else
+    Result := False;
+end;
+
 function TToken.IsWhiteSpace: Boolean;
 begin
   Result := Self.TokenType = ttWhiteSpace;
@@ -250,6 +294,11 @@ end;
 procedure TToken.SetParsedValueAsInt64(const V: Int64);
 begin
   Self.ParsedValue := TValue.From<Int64>(V);
+end;
+
+procedure TToken.SetParsedValueAsString(const Value: String);
+begin
+  Self.ParsedValue := TValue.From<String>(Value);
 end;
 
 { TCodeLocation }
