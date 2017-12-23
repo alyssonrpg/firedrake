@@ -432,7 +432,7 @@ procedure TLexerContent.LoadFromBytes(Data: TBytes; Encoding: TEncoding);
 var
   i: NativeInt;
   AccumUTF16CharCount, ThisGlyphUTF16CharCount, CurrentLineIndex, CurrentColumnIndex: NativeInt;
-  G: TUTF16Glyph;
+  GPtr: PUTF16Glyph;
   GlyphInfo: PLexerGlyphPosInfo;
 const
   BREAK_LINE_CHARS = #13#10;
@@ -450,18 +450,18 @@ begin
     GlyphInfo := @FGlyphsInfos[0];
     CurrentLineIndex := 0;
     CurrentColumnIndex := 0;
+    GPtr := @FGlyphs[0];
 
     for i := 0 to FGlyphCount - 1 do
     begin
-      G := FGlyphs[i];
-      ThisGlyphUTF16CharCount := G.TotalLength;
+      ThisGlyphUTF16CharCount := GPtr.TotalLength;
 
       GlyphInfo.UTF16CharIndex := AccumUTF16CharCount;
       GlyphInfo.UTF16CharCount := Byte(ThisGlyphUTF16CharCount);
       GlyphInfo.LineIndex := CurrentLineIndex;
       GlyphInfo.ColumnIndex := CurrentColumnIndex;
 
-      if G.IsBreakLine then
+      if GPtr.IsBreakLine then
       begin
         Inc(CurrentLineIndex);
         CurrentColumnIndex := 0;
@@ -470,6 +470,7 @@ begin
 
       AccumUTF16CharCount := AccumUTF16CharCount + ThisGlyphUTF16CharCount;
       Inc(GlyphInfo); // Point to Next GlyphInfo
+      Inc(GPtr);
     end;
   end;
 
@@ -541,17 +542,17 @@ end;
 procedure TLexerContent.LoadGlyphsArray(const InputString: String);
 var
   Seeker: TUTF16GlyphsSequencialSeek;
-  G: TUTF16Glyph;
+  GPtr: PUTF16Glyph;
 begin
   FGlyphCount := 0;
   SetLength(FGlyphs, Length(InputString) + 5);
   Seeker.PrepareForSequencialSeek(InputString);
+  GPtr := @FGlyphs[0];
 
-  while Seeker.FetchNext(G) do
+  while Seeker.FetchNext(GPtr^) do
   begin
-    Assert(FGlyphCount < Length(FGlyphs));
-    FGlyphs[FGlyphCount] := G;
     Inc(FGlyphCount);
+    Inc(GPtr);
   end;
 end;
 
