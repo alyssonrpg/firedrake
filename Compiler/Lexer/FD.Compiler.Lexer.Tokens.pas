@@ -30,8 +30,6 @@ type
 
     UTF16CharStartIndex: NativeInt;
     UTF16CharCount: Integer;
-    GlyphStartIndex: NativeInt;
-    GlyphCount: Integer;
 
     procedure Initialize;
   end;
@@ -316,8 +314,6 @@ begin
   Self.FileName := '';
   Self.UTF16CharStartIndex := -1;
   Self.UTF16CharCount := 0;
-  Self.GlyphStartIndex := -1;
-  Self.GlyphCount := 0;
   Self.LineIndex := -1;
   Self.ColumnIndex := -1;
 end;

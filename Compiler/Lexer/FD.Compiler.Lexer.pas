@@ -10,33 +10,31 @@ uses
   System.Comparers, FD.Compiler.StateMachine;
 
 type
-  TLexerGlyphPosInfo = packed record
-    UTF16CharIndex: NativeInt;
-    UTF16CharCount: Byte;
+  TLexerCharPosInfo = packed record
     LineIndex: NativeInt;
     ColumnIndex: NativeInt;
   end;
 
-  PLexerGlyphPosInfo = ^TLexerGlyphPosInfo;
+  PLexerCharPosInfo = ^TLexerCharPosInfo;
 
   TLexerContent = class(TObject)
+  private
   protected
     FEnvironment: TCompilerEnvironment;
     FUnfoldName: String;
     FAbsoluteFileName: String;
     FContent: String;
+    FContentFirstCharPtr: PChar;
 
-    FGlyphs: TArray<TUTF16Glyph>;
-    FGlyphCount: NativeInt;  // Length(FGlyphs) can (and will be) greater than FGlyphCount
-    FGlyphsInfos: TArray<TLexerGlyphPosInfo>;
+    FCharsInfos: TArray<TLexerCharPosInfo>;
 
-    FCurrentGlyphIdx: NativeInt;
-    FCurrentGlyphIdxStack: TStack<NativeInt>;
+    FCurrentCharIdx: NativeInt;
+    FCurrentCharIdxStack: TStack<NativeInt>;
 
-    function GetGlyphCount: NativeInt; virtual;
-    function GetGlyph(const Index: NativeInt): TUTF16Glyph; virtual;
-    procedure SetCurrentGlyphIdx(const Value: NativeInt); virtual;
-    procedure LoadGlyphsArray(const InputString: String); virtual;
+    function GetCharCount: NativeInt; virtual;
+    function GetCharAt(const Index: NativeInt): Char; virtual;
+    function GetCharPtrAt(const Index: NativeInt): PChar; virtual;
+    procedure SetCurrentCharIdx(const Value: NativeInt); virtual;
   public
     constructor Create(Environment: TCompilerEnvironment;
                        LogicalUnfoldName, FullPathFileName: String);
@@ -47,23 +45,25 @@ type
     procedure LoadFromStream(const Stream: TStream; Encoding: TEncoding); virtual;
     procedure LoadFromStreamDiscoverEncoding(const Stream: TStream); virtual;
 
-    function Current(const DeltaOffset: NativeInt = 0): TUTF16Glyph; inline;
-    function Next(const DeltaOffset: NativeInt = 1): TUTF16Glyph; inline;
-    function Previous(const DeltaOffset: NativeInt = -1): TUTF16Glyph; inline;
+    function Current(const DeltaOffset: NativeInt = 0): Char; inline;
+    function Next(const DeltaOffset: NativeInt = 1): Char; inline;
+    function Previous(const DeltaOffset: NativeInt = -1): Char; inline;
 
-    procedure PushCurrentGlyphIdx(const NewIndex: NativeInt);
-    procedure PopCurrentGlyphIdx;
+    procedure PushCurrentCharIdx(const NewIndex: NativeInt);
+    procedure PopCurrentCharIdx;
 
-    function CreateFileRange(const StartGlyphIndex, GlyphCount: NativeInt): TFileRange; virtual;
-    function SubString(const StartGlyphIndex, GlyphCount: NativeInt): String; virtual;
+    function CreateFileRange(const StartCharIndex, CharCount: NativeInt): TFileRange; virtual;
+    function SubString(const StartCharIndex, CharCount: NativeInt): String; overload; virtual;
+    function SubString(const Range: TFileRange): String; overload; virtual;
 
     property Environment: TCompilerEnvironment read FEnvironment;
     property UnfoldName: String read FUnfoldName;
     property AbsoluteFileName: String read FAbsoluteFileName;
 
-    property CurrentGlyphIdx: NativeInt read FCurrentGlyphIdx write SetCurrentGlyphIdx;
-    property GlyphCount: NativeInt read GetGlyphCount;
-    property Glyph[const Index: NativeInt]: TUTF16Glyph read GetGlyph;
+    property CurrentCharIdx: NativeInt read FCurrentCharIdx write SetCurrentCharIdx;
+    property CharCount: NativeInt read GetCharCount;
+    property CharAt[const Index: NativeInt]: Char read GetCharAt;
+    property CharPtrAt[const Index: NativeInt]: PChar read GetCharPtrAt;
   end;
 
   TBlockType = Integer;
@@ -81,7 +81,7 @@ type
     class operator Implicit(const V: TTokenStateData): TTokenType;
   end;
 
-  TTokenState = TState<TUCS4Sequence, TTokenStateData>;
+  TTokenState = TState<Char, TTokenStateData>;
 
   TLexerRules = class(TObject)
   public
@@ -99,7 +99,7 @@ type
   protected
     FIsCaseSensitive: Boolean;
     FBlockTypes: TDictionary<TBlockType, TBlockRules>;
-    FTokenStateMachine: TStateMachine<TUCS4Sequence, TTokenStateData>;
+    FTokenStateMachine: TStateMachine<Char, TTokenStateData>;
     FFormatSettings: TFormatSettings;
   public
     constructor Create;
@@ -114,7 +114,7 @@ type
     function IsKeyword(const CurrentBlockType: TBlockType; const Value: TKeyword): Boolean;
 
     property IsCaseSensitive: Boolean read FIsCaseSensitive write FIsCaseSensitive;
-    property TokenStateMachine: TStateMachine<TUCS4Sequence, TTokenStateData> read FTokenStateMachine;
+    property TokenStateMachine: TStateMachine<Char, TTokenStateData> read FTokenStateMachine;
   end;
 
   (* TLexer is an abstract class that purposes is to interpret correctly
@@ -220,22 +220,22 @@ end;
 
 function TLexer.GetEOF: Boolean;
 begin
-  Result := FContent.CurrentGlyphIdx >= FContent.GlyphCount;
+  Result := FContent.CurrentCharIdx >= FContent.CharCount;
 end;
 
 function TLexer.GetNextToken: TToken;
 var
   CurrentMachineState, NextMachineState, LastFinalMachineStateFound: TTokenState;
   i, FirstGlyphIndex, LastFinalMachineStateFoundGlyphIndex: NativeInt;
-  Glyph: TUTF16Glyph;
-  GlyphUCS4Sequence: TUCS4Sequence;
+  C: Char;
+  CurrentCharPtr: PChar;
   TokenStateData: TTokenStateData;
 begin
   Assert(FContent <> nil);
 
-  if FContent.CurrentGlyphIdx >= FContent.GlyphCount then
+  if FContent.CurrentCharIdx >= FContent.CharCount then
   begin
-    Result := TToken.CreateEOF(Self.CreateCodeLocation(FContent.CurrentGlyphIdx, 0));
+    Result := TToken.CreateEOF(Self.CreateCodeLocation(FContent.CurrentCharIdx, 0));
     Exit;
   end;
 
@@ -248,17 +248,16 @@ begin
   LastFinalMachineStateFound := nil;
   LastFinalMachineStateFoundGlyphIndex := -1;
 
-  FirstGlyphIndex := FContent.CurrentGlyphIdx;
+  FirstGlyphIndex := FContent.CurrentCharIdx;
   i := FirstGlyphIndex;
+  CurrentCharPtr := FContent.CharPtrAt[FirstGlyphIndex];
 
-  while i < FContent.GlyphCount do
+  while i < FContent.CharCount do
   begin
-    Glyph := FContent.Glyph[i];
-    Glyph.ToUCS4SequenceSeek(GlyphUCS4Sequence);
-
+    C := CurrentCharPtr^;
     NextMachineState := nil;
 
-    if CurrentMachineState.TryLocateNextState(GlyphUCS4Sequence, NextMachineState) then
+    if CurrentMachineState.TryLocateNextState(C, NextMachineState) then
     begin
       Assert(NextMachineState <> nil);
       CurrentMachineState := NextMachineState;
@@ -272,6 +271,7 @@ begin
       Break;
 
     Inc(i);
+    Inc(CurrentCharPtr);
   end;
 
   if (LastFinalMachineStateFound <> nil) then
@@ -298,14 +298,17 @@ begin
     Result.Location := Self.CreateCodeLocation(FirstGlyphIndex, 1);
   end;
 
-  Result.InputString := FContent.SubString(Result.Location.RealLocation.GlyphStartIndex,
-                                           Result.Location.RealLocation.GlyphCount);
+  if Result.TokenType <> ttWhiteSpace then
+  begin
+    Result.InputString := FContent.SubString(Result.Location.RealLocation);
 
-  if (Result.TokenType = ttIdentifier) and (FRules.IsKeyword(FCurrentBlockType, Result.InputString)) then
-    Result.TokenType := ttKeyword;
+    if (Result.TokenType = ttIdentifier) and (FRules.IsKeyword(FCurrentBlockType, Result.InputString)) then
+      Result.TokenType := ttKeyword;
 
-  FRules.AssignParsedValueForToken(Result);
-  FContent.CurrentGlyphIdx := Result.Location.RealLocation.GlyphStartIndex + Result.Location.RealLocation.GlyphCount;
+    FRules.AssignParsedValueForToken(Result);
+  end;
+
+  FContent.CurrentCharIdx := Result.Location.RealLocation.UTF16CharStartIndex + Result.Location.RealLocation.UTF16CharCount;
 end;
 
 function TLexer.InstanciateRules: TLexerRules;
@@ -353,32 +356,30 @@ begin
   FUnfoldName := LogicalUnfoldName;
   FAbsoluteFileName := FullPathFileName;
 
-  FCurrentGlyphIdxStack := TStack<NativeInt>.Create;
+  FCurrentCharIdxStack := TStack<NativeInt>.Create;
 end;
 
-function TLexerContent.CreateFileRange(const StartGlyphIndex,
-  GlyphCount: NativeInt): TFileRange;
+function TLexerContent.CreateFileRange(const StartCharIndex,
+  CharCount: NativeInt): TFileRange;
 var
-  GlyphInfo: PLexerGlyphPosInfo;
+  CharInfo: PLexerCharPosInfo;
 begin
-  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= FGlyphCount));
+  Assert((StartCharIndex >= 0) and (StartCharIndex <= Length(FContent)));
 
   Result.Initialize;
   Result.FileName := Self.AbsoluteFileName;
 
-  if StartGlyphIndex = FGlyphCount then
+  if StartCharIndex = Length(FContent) then
   begin
-    Assert(GlyphCount = 0);
+    Assert(CharCount = 0);
     Result.UTF16CharStartIndex := Length(FContent);
     Result.UTF16CharCount := 0;
-    Result.GlyphStartIndex := Self.GlyphCount;
-    Result.GlyphCount := 0;
 
-    if Length(FGlyphsInfos) > 0 then
+    if Length(FCharsInfos) > 0 then
     begin
-      GlyphInfo := @FGlyphsInfos[Length(FGlyphsInfos) - 1];
-      Result.LineIndex := GlyphInfo.LineIndex;
-      Result.ColumnIndex := GlyphInfo.ColumnIndex;
+      CharInfo := @FCharsInfos[Length(FCharsInfos) - 1];
+      Result.LineIndex := CharInfo.LineIndex;
+      Result.ColumnIndex := CharInfo.ColumnIndex;
     end else
     begin
       Result.LineIndex := 0;
@@ -386,95 +387,125 @@ begin
     end;
   end else
   begin
-    Assert(StartGlyphIndex + GlyphCount <= FGlyphCount);
-    Assert(GlyphCount > 0);
+    Assert(StartCharIndex + CharCount <= Length(FContent));
+    Assert(CharCount > 0);
 
-    GlyphInfo := @FGlyphsInfos[StartGlyphIndex];
+    CharInfo := @FCharsInfos[StartCharIndex];
 
-    Result.GlyphStartIndex := StartGlyphIndex;
-    Result.GlyphCount := GlyphCount;
-    Result.LineIndex := GlyphInfo.LineIndex;
-    Result.ColumnIndex := GlyphInfo.ColumnIndex;
-    Result.UTF16CharStartIndex := GlyphInfo.UTF16CharIndex;
-
-    GlyphInfo := @FGlyphsInfos[StartGlyphIndex + GlyphCount - 1];
-    Result.UTF16CharCount := GlyphInfo.UTF16CharIndex + GlyphInfo.UTF16CharCount;
-
-    Assert(Result.UTF16CharCount > 0);
+    Result.LineIndex := CharInfo.LineIndex;
+    Result.ColumnIndex := CharInfo.ColumnIndex;
+    Result.UTF16CharStartIndex := StartCharIndex;
+    Result.UTF16CharCount := CharCount;
   end;
 end;
 
-function TLexerContent.Current(const DeltaOffset: NativeInt): TUTF16Glyph;
+function TLexerContent.Current(const DeltaOffset: NativeInt): Char;
 begin
-  Result := Self.Glyph[Self.CurrentGlyphIdx + DeltaOffset];
+  Result := Self.CharAt[Self.CurrentCharIdx + DeltaOffset];
 end;
 
 destructor TLexerContent.Destroy;
 begin
-  FCurrentGlyphIdxStack.DisposeOf;
+  FCurrentCharIdxStack.DisposeOf;
   inherited;
 end;
 
-function TLexerContent.GetGlyph(const Index: NativeInt): TUTF16Glyph;
+function TLexerContent.GetCharAt(const Index: NativeInt): Char;
 begin
-  if (Index >= 0) and (Index < FGlyphCount) then
-    Result := FGlyphs[Index]
+  if (Index >= 0) and (Index < Length(FContent)) and (FContentFirstCharPtr <> nil) then
+    Result := PChar(NativeUInt(FContentFirstCharPtr) + NativeUInt(Index * SizeOf(Char)))^
   else
-    Result := TUTF16Glyph.Null;
+    Result := #0;
 end;
 
-function TLexerContent.GetGlyphCount: NativeInt;
+function TLexerContent.GetCharCount: NativeInt;
 begin
-  Result := FGlyphCount;
+  Result := Length(FContent);
+end;
+
+function TLexerContent.GetCharPtrAt(const Index: NativeInt): PChar;
+begin
+  if (Index >= 0) and (Index < Length(FContent)) and (FContentFirstCharPtr <> nil) then
+    Result := PChar(NativeUInt(FContentFirstCharPtr) + NativeUInt(Index * SizeOf(Char)))
+  else
+    Result := #0;
 end;
 
 procedure TLexerContent.LoadFromBytes(Data: TBytes; Encoding: TEncoding);
 var
-  i: NativeInt;
-  AccumUTF16CharCount, ThisGlyphUTF16CharCount, CurrentLineIndex, CurrentColumnIndex: NativeInt;
-  GPtr: PUTF16Glyph;
-  GlyphInfo: PLexerGlyphPosInfo;
+  i, MaxLoopI: NativeInt;
+  CurrentLineIndex, CurrentColumnIndex: NativeInt;
+  CharPtr: PChar;
+  CurrentC: Char;
+  GlyphInfo: PLexerCharPosInfo;
 const
   BREAK_LINE_CHARS = #13#10;
 begin
   FContent := Encoding.GetString(Data);
-  FCurrentGlyphIdx := 0;
 
-  Self.LoadGlyphsArray(FContent);
+  if FContent <> '' then
+    FContentFirstCharPtr := PChar(Pointer(FContent))
+  else
+    FContentFirstCharPtr := nil;
 
-  SetLength(FGlyphsInfos, FGlyphCount);
+  FCurrentCharIdx := 0;
+  SetLength(FCharsInfos, Length(FContent));
 
-  if FGlyphCount > 0 then
+  if Length(FContent) > 0 then
   begin
-    AccumUTF16CharCount := 0;
-    GlyphInfo := @FGlyphsInfos[0];
+    GlyphInfo := @FCharsInfos[0];
     CurrentLineIndex := 0;
     CurrentColumnIndex := 0;
-    GPtr := @FGlyphs[0];
+    CharPtr := FContentFirstCharPtr;
 
-    for i := 0 to FGlyphCount - 1 do
+    i := 0;
+    MaxLoopI := Length(FContent) - 1;
+
+    while i <= MaxLoopI do
     begin
-      ThisGlyphUTF16CharCount := GPtr.TotalLength;
-
-      GlyphInfo.UTF16CharIndex := AccumUTF16CharCount;
-      GlyphInfo.UTF16CharCount := Byte(ThisGlyphUTF16CharCount);
       GlyphInfo.LineIndex := CurrentLineIndex;
       GlyphInfo.ColumnIndex := CurrentColumnIndex;
 
-      if GPtr.IsBreakLine then
-      begin
-        Inc(CurrentLineIndex);
-        CurrentColumnIndex := 0;
-      end else
-        Inc(CurrentColumnIndex);
+      CurrentC := CharPtr^;
 
-      AccumUTF16CharCount := AccumUTF16CharCount + ThisGlyphUTF16CharCount;
-      Inc(GlyphInfo); // Point to Next GlyphInfo
-      Inc(GPtr);
+      if (CurrentC = #13) then
+      begin
+        if (i < MaxLoopI) and (SeekPChar(CharPtr, 1)^ = #10) then
+        begin
+          Inc(GlyphInfo);
+          GlyphInfo.LineIndex := CurrentLineIndex;
+          GlyphInfo.ColumnIndex := CurrentColumnIndex +1;
+
+          Inc(CurrentLineIndex);
+          CurrentColumnIndex := 0;
+
+          Inc(GlyphInfo);
+          Inc(CharPtr, 2);
+          Inc(i, 2);
+        end else
+        begin
+          Inc(CurrentLineIndex);
+          CurrentColumnIndex := 0;
+          Inc(CharPtr);
+          Inc(i);
+        end;
+      end else
+      begin
+        if (CurrentC = #10) or (CurrentC = Char($85)) then
+        begin
+          Inc(CurrentLineIndex);
+          CurrentColumnIndex := 0;
+        end else
+          Inc(CurrentColumnIndex);
+
+        Inc(GlyphInfo); // Point to Next GlyphInf
+        Inc(CharPtr);
+        Inc(i);
+      end;
     end;
   end;
 
-  Assert(FCurrentGlyphIdx <= FGlyphCount);
+  Assert(FCurrentCharIdx <= Length(FContent));
 end;
 
 procedure TLexerContent.LoadFromBytesDiscoverEncoding(Data: TBytes);
@@ -539,81 +570,58 @@ begin
   end;
 end;
 
-procedure TLexerContent.LoadGlyphsArray(const InputString: String);
-var
-  Seeker: TUTF16GlyphsSequencialSeek;
-  GPtr: PUTF16Glyph;
+function TLexerContent.Next(const DeltaOffset: NativeInt): Char;
 begin
-  FGlyphCount := 0;
-  SetLength(FGlyphs, Length(InputString) + 5);
-  Seeker.PrepareForSequencialSeek(InputString);
-  GPtr := @FGlyphs[0];
+  Result := Self.CharAt[Self.CurrentCharIdx + DeltaOffset];
+end;
 
-  while Seeker.FetchNext(GPtr^) do
+procedure TLexerContent.PopCurrentCharIdx;
+begin
+  FCurrentCharIdx := FCurrentCharIdxStack.Pop;
+  Assert((FCurrentCharIdx >= 0) and (FCurrentCharIdx <= Length(FContent)));
+end;
+
+function TLexerContent.Previous(const DeltaOffset: NativeInt): Char;
+begin
+  Result := Self.CharAt[Self.CurrentCharIdx + DeltaOffset];
+end;
+
+procedure TLexerContent.PushCurrentCharIdx(const NewIndex: NativeInt);
+begin
+  Assert((NewIndex >= 0) and (NewIndex <= Length(FContent)));
+
+  FCurrentCharIdxStack.Push(FCurrentCharIdx);
+  FCurrentCharIdx := NewIndex;
+end;
+
+procedure TLexerContent.SetCurrentCharIdx(const Value: NativeInt);
+begin
+  if FCurrentCharIdx <> Value then
   begin
-    Inc(FGlyphCount);
-    Inc(GPtr);
+    Assert((Value >= 0) and (Value <= Length(FContent)));
+    FCurrentCharIdx := Value;
   end;
 end;
 
-function TLexerContent.Next(const DeltaOffset: NativeInt): TUTF16Glyph;
+function TLexerContent.SubString(const Range: TFileRange): String;
 begin
-  Result := Self.Glyph[Self.CurrentGlyphIdx + DeltaOffset];
+  Result := Self.SubString(Range.UTF16CharStartIndex, Range.UTF16CharCount);
 end;
 
-procedure TLexerContent.PopCurrentGlyphIdx;
+function TLexerContent.SubString(const StartCharIndex,
+  CharCount: NativeInt): String;
 begin
-  FCurrentGlyphIdx := FCurrentGlyphIdxStack.Pop;
-  Assert((FCurrentGlyphIdx >= 0) and (FCurrentGlyphIdx <= FGlyphCount));
-end;
+  Assert((StartCharIndex >= 0) and (StartCharIndex <= Length(FContent)));
 
-function TLexerContent.Previous(const DeltaOffset: NativeInt): TUTF16Glyph;
-begin
-  Result := Self.Glyph[Self.CurrentGlyphIdx + DeltaOffset];
-end;
-
-procedure TLexerContent.PushCurrentGlyphIdx(const NewIndex: NativeInt);
-begin
-  Assert((NewIndex >= 0) and (NewIndex <= FGlyphCount));
-
-  FCurrentGlyphIdxStack.Push(FCurrentGlyphIdx);
-  FCurrentGlyphIdx := NewIndex;
-end;
-
-procedure TLexerContent.SetCurrentGlyphIdx(const Value: NativeInt);
-begin
-  if FCurrentGlyphIdx <> Value then
+  if StartCharIndex =  Length(FContent) then
   begin
-    Assert((Value >= 0) and (Value <= FGlyphCount));
-    FCurrentGlyphIdx := Value;
-  end;
-end;
-
-function TLexerContent.SubString(const StartGlyphIndex,
-  GlyphCount: NativeInt): String;
-var
-  GlyphInfo: PLexerGlyphPosInfo;
-  StringStartIndex, StringCharCount: NativeInt;
-begin
-  Assert((StartGlyphIndex >= 0) and (StartGlyphIndex <= FGlyphCount));
-
-  if StartGlyphIndex = FGlyphCount then
-  begin
-    Assert(GlyphCount = 0);
+    Assert(CharCount = 0);
     Result := '';
   end else
   begin
-    Assert(StartGlyphIndex + GlyphCount <= FGlyphCount);
-    Assert(GlyphCount > 0);
-
-    GlyphInfo := @FGlyphsInfos[StartGlyphIndex];
-    StringStartIndex := GlyphInfo.UTF16CharIndex;
-
-    GlyphInfo := @FGlyphsInfos[StartGlyphIndex + GlyphCount - 1];
-    StringCharCount := (GlyphInfo.UTF16CharIndex + GlyphInfo.UTF16CharCount) - StringStartIndex;
-
-    Assert(StringCharCount > 0);
-    Result := FContent.Substring(StringStartIndex, StringCharCount);
+    Assert(StartCharIndex + CharCount <=  Length(FContent));
+    Assert(CharCount > 0);
+    Result := FContent.Substring(StartCharIndex, CharCount);
   end;
 end;
 
@@ -651,7 +659,7 @@ end;
 constructor TLexerRules.Create;
 begin
   FBlockTypes := TDictionary<TBlockType, TBlockRules>.Create;
-  FTokenStateMachine := TStateMachine<TUCS4Sequence, TTokenStateData>.Create(TUCS4SequenceComparer.Create);
+  FTokenStateMachine := TStateMachine<Char, TTokenStateData>.Create();
 
   Self.AddBlockType(BLOCKTYPE_MAIN);
 

@@ -24,6 +24,7 @@ type
 
     FTransitions: TList<TStateTransition<T, U>>;
     FTransitionsDirty: Boolean;
+    FTransitionsArray: TArray<TStateTransition<T, U>>;
 
     FFallbackTransitionNextState: TState<T, U>;
 
@@ -157,6 +158,9 @@ begin
   Transition.NextState := NextState;
   FTransitions.Add(Transition);
   FTransitionsDirty := True;
+
+  if Length(FTransitionsArray) <> 0 then
+    SetLength(FTransitionsArray, 0);
 end;
 
 constructor TState<T, U>.Create(Comparer: IComparer<T>);
@@ -169,6 +173,9 @@ end;
 
 destructor TState<T, U>.Destroy;
 begin
+  if Length(FTransitionsArray) <> 0 then
+    SetLength(FTransitionsArray, 0);
+
   FTransitions.DisposeOf;
   inherited;
 end;
@@ -194,6 +201,8 @@ begin
       begin
         Result := FComparer.Compare(Left.StartCondition, Right.StartCondition);
       end));
+
+  FTransitionsArray := FTransitions.ToArray;
 end;
 
 function TState<T, U>.TryLocateNextState(Value: T; out NextState: TState<T, U>): Boolean;
@@ -206,12 +215,12 @@ begin
 
   // Binary Search
   L := 0;
-  H := FTransitions.Count - 1;
+  H := Length(FTransitionsArray) - 1;
 
   while L <= H do
   begin
     Middle := (L + H) div 2;
-    Transition := FTransitions[Middle];
+    Transition := FTransitionsArray[Middle];
 
     if FComparer.Compare(Value, Transition.StartCondition) < 0 then
       H := Middle - 1

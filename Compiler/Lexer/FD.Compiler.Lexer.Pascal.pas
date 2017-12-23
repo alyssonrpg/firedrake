@@ -491,7 +491,6 @@ begin
   FromState.AddTransition(#13, ToState);
   FromState.AddTransition(#10, ToState);
   FromState.AddTransition(#$85, ToState);
-  FromState.AddTransition(#13#10, ToState);
 end;
 
 procedure TPascalLexerRules.StateUtil_AddWhiteSpaceTransition(const FromState,
